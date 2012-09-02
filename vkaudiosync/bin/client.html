@@ -1,0 +1,256 @@
+﻿<!DOCTYPE html>
+
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=9" />
+    <title></title>
+    <script src="jquery-1.8.1.min.js"></script>
+    <script src="underscore-min.js"></script>
+    
+    <script src="json2.js"></script>
+    <script src="deferred.js"></script>
+    <script src="dummy_console.js"></script>
+    <script src="external.js"></script>
+    <script src="query.js"></script>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            font-family: Tahoma;
+            font-size: 15px;
+        }
+
+        body {
+            padding: 20px;
+        }
+
+        button, input[type="text"] {
+            font-family: Tahoma;
+            font-size: 15px;
+        }
+
+        div.p {
+            border-bottom: 1px solid silver;
+            padding: 0 0 30px 0;
+            margin: 0 0 10px 0;
+        }
+
+        div.p.last {
+            border-bottom: 0 none;
+        }
+
+        #audio_list {
+            border: 1px solid silver;
+            height: 250px;
+            overflow: auto;
+            overflow-y: scroll;
+        }
+
+        th.cb, td.cb {
+            width: 25px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-align: center;
+        }
+
+        #audio_list tr.new {
+            background: #ffe0e0;
+        }
+
+        #audio_list tr.error {
+            background: #ffa0a0;
+        }
+
+        #audio_list tr.already_exists {
+            background: #e0ffe0;
+        }
+
+        #audio_list tr.done {
+            background: #e0ffe0;
+        }
+
+        #audio_list tr.downloading {
+            background: #ffd800;
+        }
+
+        td.cb label {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="content">
+        <div class="p">
+            <div>1. Авторизуйтесь ВКонтакте.</div>
+            <div><button id="auth">Авторизоваться</button></div>
+        </div>
+
+        <div class="p">
+            <div>2. Выберите папку для синхронизации.</div>
+            <div>
+                <input id="folder" type="text" style="width:400px" />
+                <button id="browse_folder">Обзор...</button>
+            </div>
+        </div>
+
+        <div class="p">
+            <div>3. Получите список композиций.</div>
+            <div><button id="get_audio_list">Получить список</button></div>
+            <div id="audio_list"></div>
+        </div>
+
+        <div class="p last">
+            <div>4. Запустите синхронизацию.</div>
+            <button id="go">Скачать выбранные файлы</button>
+        </div>
+    </div>
+    <script>
+        var going = false,
+            haveData = false;
+
+        function updateAudioList(folder, files) {
+            stop();
+            var table = $('<table>');
+            table.append('<tr><th>&nbsp;</th><th>Название</th><th>Состояние</th></tr>');
+            var rowid = 0;
+            _.each(files, function (f) {
+                var tr = $('<tr>').appendTo(table);
+                tr.attr('id', 'row' + (++rowid));
+                tr.addClass(f.exists ? 'already_exists' : 'new');
+
+                var td = $('<td class="cb"><label><input class="download" type="checkbox" /></label></td>');
+                var cb = td.find('input.download');
+                if (!f.exists) {
+                    cb.prop('checked', true);
+                }
+                td.appendTo(tr);
+
+                var name = f.artist + ' - ' + f.title;
+                td = $('<td>').html(name);
+                name = td.text(); // unescape!
+                f.filename = name + '.mp3';
+                f.folder = folder;
+                td.appendTo(tr);
+
+                td = $('<td class="state">').html(f.exists ? 'Уже есть' : 'Новая');
+                td.appendTo(tr);
+                tr.data('file', f);
+            });
+            $('#audio_list').html(table);
+            haveData = true;
+        }
+
+        function go() {
+            if (going) return;
+            going = true;
+            $('#go').html('Остановить синхронизацию');
+            downloadNext();
+        }
+
+        function stop() {
+            external.cancelDownloads();
+            going = false;
+            $('#go').html('Скачать выбранные файлы');
+        }
+
+        var downloads = {};
+        var did = 0;
+
+        function downloadNext() {
+            if (!going) return;
+            var tr = $('#audio_list').find('input.download:checked:first').parents('tr:first');
+            if (tr.length) {
+                tr.attr('class', 'downloading');
+                tr.find('td.state').html('Качаем...');
+                var curid = (++did);
+                downloads[curid] = tr.attr('id');
+                var f = tr.data('file');
+                external.startDownload(curid, f.url, f.folder, f.filename);
+            } else {
+                stop();
+            }
+        }
+
+        function downloadProgress(id, progress, total) {
+            function mb(bytes) {
+                var x100 = Math.round(bytes / (1024 * 1024) * 100);
+                return x100 / 100;
+            }
+
+            if (id in downloads) {
+                var rowid = downloads[id];
+                $('tr#' + rowid).find('td.state').html(mb(progress) + '/' + mb(total));
+            }
+        }
+
+        function downloadEnd(id) {
+            if (id in downloads) {
+                var rowid = downloads[id];
+                var tr = $('tr#' + rowid);
+                tr.attr('class', 'done');
+                tr.find('td.state').html('Скачана');
+                tr.find('input.download').prop('checked', false);
+                delete downloads[id];
+                setTimeout(downloadNext, 0);
+            }
+        }
+
+        function downloadError(id, err) {
+            if (id in downloads) {
+                console.log('Ошибка при скачивании файла: ' + err);
+                var rowid = downloads[id];
+                var tr = $('tr#' + rowid);
+                tr.attr('class', 'error');
+                tr.find('td.state').html('Ошибка');
+                delete downloads[id];
+                stop();
+            }
+        }
+
+        $(function () {
+            $('#folder').val(external.getLastFolder());
+
+            $('#auth').click(auth);
+
+            $('#browse_folder').click(function () {
+                var newFolder = external.browseFolder($('#folder').val());
+                if (newFolder != null) {
+                    $('#folder').val(newFolder);
+                }
+            });
+
+            $('#get_audio_list').click(function () {
+                var folder = $('#folder').val();
+                if (!external.isFolderOk(folder)) {
+                    console.log('Выберите папку для синхронизации!');
+                    return;
+                }
+                query('audio.get').then(function (res) {
+                    try {
+                        var existing = ext.json('markExistingFiles', { folder: folder, files: res }).d;
+                        _.each(res, function (f) {
+                            if (_.include(existing, String(f.aid))) {
+                                f.exists = true;
+                            }
+                        });
+                        updateAudioList(folder, res);
+                    } catch (err) {
+                        console.log(err.message);
+                    }
+                });
+            });
+
+            $('#go').click(function () {
+                if (!haveData) return;
+                if (!going) {
+                    go();
+                } else {
+                    stop();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
